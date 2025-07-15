@@ -1,0 +1,853 @@
+STEP1: create memory buffer
+libavutil/pixdesc.c:133:
+//MvDecoder: only support yuv420p
+const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
+    [AV_PIX_FMT_YUV420P] = {
+        .name = "yuv420p",
+        .nb_components = 4,
+        .log2_chroma_w = 1,
+        .log2_chroma_h = 1,
+        .comp = {
+            { 0, 0, 1, 0, 7 },        /* Y */
+            { 1, 0, 1, 0, 7 },        /* U */
+            { 2, 0, 1, 0, 7 },        /* V */
+            { 3, 0, 1, 0, 7 },        /* MV */
+        },
+        .flags = AV_PIX_FMT_FLAG_PLANAR,
+    },
+
+
+
+
+
+
+
+STEP2: save features to the buffers
+libavcodec/hevc.c:2207
+    // MvDecoder: get buffer dst pointer.
+    uint8_t *MvDecoder_dst3 = &s->frame->data[3][((y0) >> s->sps->vshift[0]) * s->frame->linesize[0] + \
+                           (((x0) >> s->sps->hshift[0]) << s->sps->pixel_shift)];
+
+libavcodec/hevc.c:2343;2364;2382
+        // MvDecoder: write motion vector value into buffer.
+        MvDecoder_write_mv_buffer(s, MvDecoder_dst3, s->frame->linesize[0], &current_mv, nPbW, nPbH);
+
+libavcodec/hevc.c:2601
+    // MvDevoder: bytestream checkpoint of the start of cu
+    uint8_t* bytestream_last = lc->cc.bytestream;
+libavcodec/hevc.c:2635
+    // MvDevoder: bytestream checkpoint of the start of cu
+    int bytes_size_cu = lc->cc.bytestream - bytestream_last;
+    //int bytes_pu_tu = bytestream_pu + bytestream_tu;
+    // MvDeocder: fill totalByteSize of this CU.
+    MvDecoder_write_size_buffer(s, x0, y0, log2_cb_size, bytes_size_cu);
+
+/**
+ * MvDecoder_write_mv_buffer
+ *
+ * @param s HEVC decoding context
+ * @param block_w width of block
+ * @param block_h height of block
+ */
+
+static void MvDecoder_write_mv_buffer(HEVCContext *s, uint8_t *dst3_base, int x0, int y0,
+                        struct MvField *current_mv, int block_w, int block_h)
+{
+    int pic_width        = s->sps->width;
+    int pic_height       = s->sps->height;
+
+    int pu_resolution = (pic_height>>2)*(pic_width>>2);
+    int pu_linesize = s->frame->linesize[0]>>2;
+    int pu_y0 = y0 >> 2;
+    int pu_x0 = x0 >> 2;
+    int pu_block_w = block_w >> 2;
+    int pu_block_h = block_h >> 2;
+    int16_t *dst_l0_mx = (int16_t*)(dst3_base) + pu_y0 * pu_linesize + pu_x0;
+    int16_t *dst_l0_my = (int16_t*)(dst3_base + pu_resolution*2) + pu_y0 * pu_linesize + pu_x0;
+    int16_t *dst_l1_mx = (int16_t*)(dst3_base + pu_resolution*4) + pu_y0 * pu_linesize + pu_x0;
+    int16_t *dst_l1_my = (int16_t*)(dst3_base + pu_resolution*6) + pu_y0 * pu_linesize + pu_x0;
+    uint8_t *dst_l0_ref = dst3_base + pu_resolution*8 + pu_y0 * pu_linesize + pu_x0;
+    uint8_t *dst_l1_ref = dst3_base + pu_resolution*9 + pu_y0 * pu_linesize + pu_x0;
+
+    //亚像素的运动矢量
+    //mv0,mv1单位是1/4像素 for UV, 1/8 for Y.
+    //reverse motion vector sign if refer backwards
+    int x, y;
+    if (current_mv->pred_flag == PF_L0) {
+        for (y = 0; y < pu_block_h; y++) {
+            for (x = 0; x < pu_block_w; x++) {
+                dst_l0_mx[x] = current_mv->mv[0].x;
+                dst_l0_my[x] = current_mv->mv[0].y;
+                dst_l0_ref[x] = s->poc - current_mv->poc[0];
+            }
+            dst_l0_mx += pu_linesize;
+            dst_l0_my += pu_linesize;
+            dst_l0_ref += pu_linesize;
+        }
+    }
+    else if(current_mv->pred_flag == PF_L1) {
+        for (y = 0; y < pu_block_h; y++) {
+            for (x = 0; x < pu_block_w; x++) {
+                dst_l1_mx[x] = current_mv->mv[1].x;
+                dst_l1_my[x] = current_mv->mv[1].y;
+                dst_l1_ref[x] = current_mv->poc[1] - s->poc;
+            }
+            dst_l1_mx += pu_linesize;
+            dst_l1_my += pu_linesize;
+            dst_l1_ref += pu_linesize;
+        }
+    }
+    else if(current_mv->pred_flag == PF_BI) {
+        for (y = 0; y < pu_block_h; y++) {
+            for (x = 0; x < pu_block_w; x++) {
+                dst_l0_mx[x] = current_mv->mv[0].x;
+                dst_l0_my[x] = current_mv->mv[0].y;
+                dst_l0_ref[x] = s->poc - current_mv->poc[0];
+                dst_l1_mx[x] = current_mv->mv[1].x;
+                dst_l1_my[x] = current_mv->mv[1].y;
+                dst_l1_ref[x] = current_mv->poc[1] - s->poc;
+            }
+            dst_l0_mx += pu_linesize;
+            dst_l0_my += pu_linesize;
+            dst_l0_ref += pu_linesize;
+            dst_l1_mx += pu_linesize;
+            dst_l1_my += pu_linesize;
+            dst_l1_ref += pu_linesize;
+        }
+    }
+}
+
+
+
+/**
+ * MvDecoder_write_size_buffer
+ *
+ * @param s HEVC decoding context
+ * @param x_off horizontal position of block from origin (0, 0)
+ * @param y_off vertical position of block from origin (0, 0)
+ * @param log2_cb_size log2 of block size
+ * @param cu_byte_size number of bytes used in the bytestream of this CU block.
+ */
+static void MvDecoder_write_size_buffer(HEVCContext *s, int x0, int y0, int log2_cb_size, int cu_byte_size)
+{
+    int pic_width        = s->sps->width;
+    int pic_height       = s->sps->height;
+
+    int pu_resolution = (pic_height>>2)*(pic_width>>2);
+    //int cu_resolution = (pic_height>>3)*(pic_width>>3);
+    int cu_linesize = s->frame->linesize[0]>>3;
+    int cu_y0 = y0 >> 3;
+    int cu_x0 = x0 >> 3;
+    int cb_size = (1 << log2_cb_size) >> 3;
+
+    uint8_t *dst_size = &s->frame->data[3] + pu_resolution*10 + cu_y0 * cu_linesize + cu_x0;
+
+    int x, y;
+    int bit_density = cu_byte_size * 8 / (cb_size * cb_size);
+    //处理x*y个像素
+    for (y = 0; y < cb_size; y++) {
+        for (x = 0; x < cb_size; x++) {
+            dst_size[x] = bit_density;
+        }
+        dst_size += cu_linesize;
+    }
+}
+
+
+
+libavcodec/hevc.c:3941
+    uint8_t *MvDecoder_metaBuffer = s->frame->data[3] + ((s->sps->width<<1)*(s->sps->height<<1))*3;
+    //MvDecoder: Add magic number at the front of the buffer
+    MvDecoder_metaBuffer[0] = 4;
+    MvDecoder_metaBuffer[1] = 2;
+    //MvDecoder: save frame type to buffer
+
+    if(cur_frame->pict_type==AV_PICTURE_TYPE_I) {
+        MvDecoder_metaBuffer[2] = 0;
+    }
+    else if(cur_frame->pict_type==AV_PICTURE_TYPE_P) {
+        MvDecoder_metaBuffer[2] = 1;
+    }
+    else if(cur_frame->pict_type==AV_PICTURE_TYPE_B) {
+        MvDecoder_metaBuffer[2] = 2;
+    }
+
+
+
+
+libavcodec/hevc.c:3210
+    // CTB position x and y.
+    x_ctb = FFUMOD(ctb_addr_rs, s->sps->ctb_width) << s->sps->log2_ctb_size;
+    y_ctb = FFUDIV(ctb_addr_rs, s->sps->ctb_width) << s->sps->log2_ctb_size;
+    //MvDecoder: as index of coding block
+
+libavcodec/hevc.c:3229
+        //MvDecoder: get grid index for the CUT quadtree:
+        //For each quadtree, need 1+4+16+64=85 bits to save(including PU partition).
+        //85 bits = 11 Bytes < 12 Bytes. Use 12 Bytes/u_int_8/u_char to hold one grid.
+        //quadtree data start at 1024 bytes onwards
+        uint8_t *MvDecoder_ctu_quadtree = s->frame->data[3] + ((s->sps->width<<1)*(s->sps->height<<1))*3 + 1024 + ctb_addr_rs*12;
+
+
+
+libavcodec/hevc.c:3325
+    /*
+     * decode quadtree structure
+     *
+     * in hls_coding_quadtree(HEVCContext *s, int x0, int y0, int log2_cb_size, int cb_depth)：
+     * s：HEVCContext
+     * x_ctb：CB position x
+     * y_ctb：CB position y
+     * log2_cb_size：CB size after take log2
+     * cb_depth：depth
+     */
+    //MvDecoder: pass MvDecoder_ctu_quadtree pointer and quadtree_bit_idx to hls_coding_quadtree function.
+    more_data = hls_coding_quadtree(s, x_ctb, y_ctb, s->sps->log2_ctb_size, 0, MvDecoder_ctu_quadtree, 0);
+    if (more_data < 0) {
+        s->tab_slice_address[ctb_addr_rs] = -1;
+        return more_data;
+    }
+
+
+
+
+
+
+
+
+libavcodec/hevc.c:2957
+/*
+ * 解析四叉树结构，并且解码
+ * 注意该函数是递归调用
+ * 注释和处理：雷霄骅
+ *
+ *
+ * s：HEVCContext上下文结构体
+ * x_ctb：CB位置的x坐标
+ * y_ctb：CB位置的y坐标
+ * log2_cb_size：CB大小取log2之后的值
+ * cb_depth：深度
+ */
+static int hls_coding_quadtree(HEVCContext *s, int x0, int y0,
+                               int log2_cb_size, int cb_depth,
+                               u_int8_t *MvDecoder_ctu_quadtree,
+                               int MvDecoder_quadtree_bit_idx)
+{
+    /*
+     * hls_coding_quadtree()完成了CTU解码工作
+     * 函数是一个递归调用的函数，可以按照四叉树的句法格式解析CTU并获得其中的CU。对于每个CU会调用hls_coding_unit()进行解码。
+     * hls_coding_unit()会调用hls_prediction_unit()对CU中的PU进行处理。
+     *      hls_prediction_unit()调用luma_mc_uni()对亮度单向预测块进行运动补偿处理，
+     *                           调用chroma_mc_uni()对色度单向预测块进行运动补偿处理，
+     *                           调用luma_mc_bi()对亮度单向预测块进行运动补偿处理。
+     *
+     * hls_coding_unit()会调用hls_transform_tree()对CU中的TU进行处理。
+     * hls_transform_tree()是一个递归调用的函数，可以按照四叉树的句法格式解析并获得其中的TU。
+     * 对于每一个TU会调用hls_transform_unit()进行解码。hls_transform_unit()会进行帧内预测，并且调用ff_hevc_hls_residual_coding()解码DCT残差数据。
+     */
+    HEVCLocalContext *lc = s->HEVClc;
+
+    //CB的大小,split flag=0
+    //log2_cb_size为CB大小取log之后的结果
+    const int cb_size    = 1 << log2_cb_size;
+    int ret;
+    int qp_block_mask = (1<<(s->sps->log2_ctb_size - s->pps->diff_cu_qp_delta_depth)) - 1;
+    int split_cu_flag;
+
+    //确定CU是否还会划分？
+    lc->ct.depth = cb_depth;
+    if (x0 + cb_size <= s->sps->width  &&
+        y0 + cb_size <= s->sps->height &&
+        log2_cb_size > s->sps->log2_min_cb_size) {
+        split_cu_flag = ff_hevc_split_coding_unit_flag_decode(s, cb_depth, x0, y0);
+    } else {
+        split_cu_flag = (log2_cb_size > s->sps->log2_min_cb_size);
+    }
+    if (s->pps->cu_qp_delta_enabled_flag &&
+        log2_cb_size >= s->sps->log2_ctb_size - s->pps->diff_cu_qp_delta_depth) {
+        lc->tu.is_cu_qp_delta_coded = 0;
+        lc->tu.cu_qp_delta          = 0;
+    }
+
+	if (s->sh.cu_chroma_qp_offset_enabled_flag &&
+        log2_cb_size >= s->sps->log2_ctb_size - s->pps->diff_cu_chroma_qp_offset_depth) {
+        lc->tu.is_cu_chroma_qp_offset_coded = 0;
+	}
+    if (split_cu_flag) {
+        //MvDecoder set split bit of the tree
+        MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+
+        //如果CU还可以继续划分，则继续解析划分后的CU
+        //注意这里是递归调用
+
+
+        //CB的大小,split flag=1
+        const int cb_size_split = cb_size >> 1;
+        const int x1 = x0 + cb_size_split;
+        const int y1 = y0 + cb_size_split;
+        /*
+         * (x0, y0)  (x1, y0)
+		 *     +--------+--------+
+		 *     |                 |
+		 *     |        |        |
+		 *     |                 |
+		 *     +  --  --+ --  -- +
+		 * (x0, y1)  (x1, y1)    |
+		 *     |        |        |
+		 *     |                 |
+		 *     +--------+--------+
+		 *
+         */
+
+
+        int more_data = 0;
+
+        //注意：
+        //CU大小减半，log2_cb_size-1
+        //深度d加1，cb_depth+1
+        //MvDecoder: child bit idx = 4 * MvDecoder_quadtree_grid_idx + 1
+        more_data = hls_coding_quadtree(s, x0, y0, log2_cb_size - 1, cb_depth + 1, MvDecoder_ctu_quadtree, 4 * MvDecoder_quadtree_bit_idx + 1);
+        if (more_data < 0)
+            return more_data;
+
+        if (more_data && x1 < s->sps->width) {
+            more_data = hls_coding_quadtree(s, x1, y0, log2_cb_size - 1, cb_depth + 1, MvDecoder_ctu_quadtree, 4 * MvDecoder_quadtree_bit_idx + 2);
+            if (more_data < 0)
+                return more_data;
+        }
+        if (more_data && y1 < s->sps->height) {
+            more_data = hls_coding_quadtree(s, x0, y1, log2_cb_size - 1, cb_depth + 1, MvDecoder_ctu_quadtree, 4 * MvDecoder_quadtree_bit_idx + 3);
+            if (more_data < 0)
+                return more_data;
+        }
+        if (more_data && x1 < s->sps->width &&
+            y1 < s->sps->height) {
+            more_data = hls_coding_quadtree(s, x1, y1, log2_cb_size - 1, cb_depth + 1, MvDecoder_ctu_quadtree, 4 * MvDecoder_quadtree_bit_idx + 4);
+            if (more_data < 0)
+                return more_data;
+        }
+
+        if(((x0 + (1<<log2_cb_size)) & qp_block_mask) == 0 &&
+            ((y0 + (1<<log2_cb_size)) & qp_block_mask) == 0)
+            lc->qPy_pred = lc->qp_y;
+
+        if (more_data)
+            return ((x1 + cb_size_split) < s->sps->width ||
+                    (y1 + cb_size_split) < s->sps->height);
+        else
+            return 0;
+    } else {
+
+        /*
+         * (x0, y0)
+		 *     +--------+--------+
+		 *     |                 |
+		 *     |                 |
+		 *     |                 |
+		 *     +                 +
+		 *     |                 |
+		 *     |                 |
+		 *     |                 |
+		 *     +--------+--------+
+         *
+         */
+        //注意处理的是不可划分的CU单元
+        //处理CU单元-真正的解码
+        ret = hls_coding_unit(s, x0, y0, log2_cb_size, MvDecoder_ctu_quadtree, MvDecoder_quadtree_bit_idx);
+        if (ret < 0)
+            return ret;
+        if ((!((x0 + cb_size) &
+               ((1 << (s->sps->log2_ctb_size))) - 1) ||
+             (x0 + cb_size >= s->sps->width)) &&
+            (!((y0 + cb_size) &
+               ((1 << (s->sps->log2_ctb_size))) - 1) ||
+             (y0 + cb_size >= s->sps->height))) {
+            int end_of_slice_flag = ff_hevc_end_of_slice_flag_decode(s);
+            return !end_of_slice_flag;
+        } else {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+/* 从源代码可以看出，hls_coding_quadtree()首先调用ff_hevc_split_coding_unit_flag_decode()判断当前CU是否还需要划分。
+ * 如果需要划分的话，就会递归调用4次hls_coding_quadtree()分别对4个子块继续进行四叉树解析；
+ * 如果不需要划分，就会调用hls_coding_unit()对CU进行解码。
+ * 总而言之，hls_coding_quadtree()会解析出来一个CTU中的所有CU，并且对每一个CU逐一调用hls_coding_unit()进行解码。
+ * 一个CTU中CU的解码顺序如下图所示。图中a, b, c …即代表了的先后顺序。
+ * https://img-blog.csdn.net/20150613173036048
+*/
+
+
+
+libavcodec/hevc.c:2604
+//处理CU单元-真正的解码
+static int hls_coding_unit(HEVCContext *s, int x0, int y0, int log2_cb_size, u_int8_t *MvDecoder_ctu_quadtree, int MvDecoder_quadtree_bit_idx)
+{
+    /* （1）调用hls_prediction_unit()处理PU。
+     * （2）调用hls_transform_tree()处理TU树
+    */
+     //CB大小
+    int cb_size          = 1 << log2_cb_size;
+    HEVCLocalContext *lc = s->HEVClc;
+
+    // MvDevoder: bytestream checkpoint of the start of cu
+    uint8_t* bytestream_last = lc->cc.bytestream;
+
+    int log2_min_cb_size = s->sps->log2_min_cb_size;
+    int length           = cb_size >> log2_min_cb_size;
+    int min_cb_width     = s->sps->min_cb_width;
+
+    //以最小的CB为单位（例如4x4）的时候，当前CB的位置——x坐标和y坐标
+    int x_cb             = x0 >> log2_min_cb_size;
+    int y_cb             = y0 >> log2_min_cb_size;
+    int idx              = log2_cb_size - 2;
+    int qp_block_mask    = (1<<(s->sps->log2_ctb_size - s->pps->diff_cu_qp_delta_depth)) - 1;
+    int x, y, ret;
+
+    //设置CU的属性值
+    lc->cu.x                = x0;
+    lc->cu.y                = y0;
+    lc->cu.rqt_root_cbf     = 1;
+    lc->cu.pred_mode        = MODE_INTRA;
+    lc->cu.part_mode        = PART_2Nx2N;
+    lc->cu.intra_split_flag = 0;
+    lc->cu.pcm_flag         = 0;
+
+    //int bytestream_pu;
+    //int bytestream_tu;
+    SAMPLE_CTB(s->skip_flag, x_cb, y_cb) = 0;
+    for (x = 0; x < 4; x++)
+        lc->pu.intra_pred_mode[x] = 1;
+    if (s->pps->transquant_bypass_enable_flag) {
+        lc->cu.cu_transquant_bypass_flag = ff_hevc_cu_transquant_bypass_flag_decode(s);
+        if (lc->cu.cu_transquant_bypass_flag)
+            set_deblocking_bypass(s, x0, y0, log2_cb_size);
+    } else
+        lc->cu.cu_transquant_bypass_flag = 0;
+
+    if (s->sh.slice_type != I_SLICE) {
+        //Skip类型
+        uint8_t skip_flag = ff_hevc_skip_flag_decode(s, x0, y0, x_cb, y_cb);
+        //设置到skip_flag缓存中
+        x = y_cb * min_cb_width + x_cb;
+        for (y = 0; y < length; y++) {
+            memset(&s->skip_flag[x], skip_flag, length);
+            x += min_cb_width;
+        }
+        lc->cu.pred_mode = skip_flag ? MODE_SKIP : MODE_INTER;
+    } else {
+        x = y_cb * min_cb_width + x_cb;
+        for (y = 0; y < length; y++) {
+            memset(&s->skip_flag[x], 0, length);
+            x += min_cb_width;
+        }
+    }
+
+    if (SAMPLE_CTB(s->skip_flag, x_cb, y_cb)) {
+        hls_prediction_unit(s, x0, y0, cb_size, cb_size, log2_cb_size, 0, idx);
+        intra_prediction_unit_default_value(s, x0, y0, log2_cb_size);
+
+        if (!s->sh.disable_deblocking_filter_flag)
+            ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_cb_size);
+    } else {
+        //读取预测模式（非 I Slice）
+        if (s->sh.slice_type != I_SLICE)
+            lc->cu.pred_mode = ff_hevc_pred_mode_decode(s);
+        //不是帧内预测模式的时候
+        //或者已经是最小CB的时候
+        if (lc->cu.pred_mode != MODE_INTRA ||
+            log2_cb_size == s->sps->log2_min_cb_size) {
+            lc->cu.part_mode        = ff_hevc_part_mode_decode(s, log2_cb_size);
+            lc->cu.intra_split_flag = lc->cu.part_mode == PART_NxN &&
+                                      lc->cu.pred_mode == MODE_INTRA;
+        }
+
+        if (lc->cu.pred_mode == MODE_INTRA) {
+            //帧内预测模式
+
+            //PCM方式编码，不常见
+            if (lc->cu.part_mode == PART_2Nx2N && s->sps->pcm_enabled_flag &&
+                log2_cb_size >= s->sps->pcm.log2_min_pcm_cb_size &&
+                log2_cb_size <= s->sps->pcm.log2_max_pcm_cb_size) {
+                lc->cu.pcm_flag = ff_hevc_pcm_flag_decode(s);
+            }
+            if (lc->cu.pcm_flag) {
+                intra_prediction_unit_default_value(s, x0, y0, log2_cb_size);
+                ret = hls_pcm_sample(s, x0, y0, log2_cb_size);
+                if (s->sps->pcm.loop_filter_disable_flag)
+                    set_deblocking_bypass(s, x0, y0, log2_cb_size);
+
+                if (ret < 0)
+                    return ret;
+            } else {
+                //获取帧内预测模式
+                intra_prediction_unit(s, x0, y0, log2_cb_size);
+            }
+
+        } else {
+            //帧间预测模式
+            intra_prediction_unit_default_value(s, x0, y0, log2_cb_size);
+
+            //帧间模式一共有8种划分模式
+            //uint8_t* bytestream_before_pu = lc->cc.bytestream;
+            switch (lc->cu.part_mode) {
+            case PART_2Nx2N:
+                /*
+				 * PART_2Nx2N:
+				 * +--------+--------+
+				 * |                 |
+				 * |                 |
+				 * |                 |
+				 * +        +        +
+				 * |                 |
+				 * |                 |
+				 * |                 |
+				 * +--------+--------+
+            	 */
+                //处理PU单元-运动补偿
+                hls_prediction_unit(s, x0, y0, cb_size, cb_size, log2_cb_size, 0, idx);
+                break;
+            case PART_2NxN:
+
+                /*
+    			 * PART_2NxN:
+    			 * +--------+--------+
+    			 * |                 |
+    			 * |                 |
+    			 * |                 |
+    			 * +--------+--------+
+    			 * |                 |
+    			 * |                 |
+    			 * |                 |
+    			 * +--------+--------+
+    			 *
+                 */
+                /*
+                 * hls_prediction_unit()参数：
+                 * x0 : PU左上角x坐标
+                 * y0 : PU左上角y坐标
+                 * nPbW : PU宽度
+                 * nPbH : PU高度
+                 * log2_cb_size : CB大小取log2()的值
+                 * partIdx : PU的索引号-分成4个块的时候取0-3，分成两个块的时候取0和1
+                 */
+
+                //上
+                hls_prediction_unit(s, x0, y0,               cb_size, cb_size / 2, log2_cb_size, 0, idx);
+                //下
+                hls_prediction_unit(s, x0, y0 + cb_size / 2, cb_size, cb_size / 2, log2_cb_size, 1, idx);
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+                break;
+            case PART_Nx2N:
+                /*
+    			 * PART_Nx2N:
+    			 * +--------+--------+
+    			 * |        |        |
+    			 * |        |        |
+    			 * |        |        |
+    			 * +        +        +
+    			 * |        |        |
+    			 * |        |        |
+    			 * |        |        |
+    			 * +--------+--------+
+    			 *
+                 */
+                //左
+                hls_prediction_unit(s, x0,               y0, cb_size / 2, cb_size, log2_cb_size, 0, idx - 1);
+                //右
+                hls_prediction_unit(s, x0 + cb_size / 2, y0, cb_size / 2, cb_size, log2_cb_size, 1, idx - 1);
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+                break;
+            case PART_2NxnU:
+
+                /*
+    			 * PART_2NxnU (Upper) :
+    			 * +--------+--------+
+    			 * |                 |
+    			 * +--------+--------+
+    			 * |                 |
+    			 * +        +        +
+    			 * |                 |
+    			 * |                 |
+    			 * |                 |
+    			 * +--------+--------+
+    			 *
+                 */
+
+                //上
+                hls_prediction_unit(s, x0, y0,               cb_size, cb_size     / 4, log2_cb_size, 0, idx);
+                //下
+                hls_prediction_unit(s, x0, y0 + cb_size / 4, cb_size, cb_size * 3 / 4, log2_cb_size, 1, idx);
+
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+                break;
+            case PART_2NxnD:
+                /*
+    			 * PART_2NxnD (Down) :
+    			 * +--------+--------+
+    			 * |                 |
+    			 * |                 |
+    			 * |                 |
+    			 * +        +        +
+    			 * |                 |
+    			 * +--------+--------+
+    			 * |                 |
+    			 * +--------+--------+
+    			 *
+                 */
+
+                //上
+                hls_prediction_unit(s, x0, y0,                   cb_size, cb_size * 3 / 4, log2_cb_size, 0, idx);
+                //下
+                hls_prediction_unit(s, x0, y0 + cb_size * 3 / 4, cb_size, cb_size     / 4, log2_cb_size, 1, idx);
+
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+                break;
+            case PART_nLx2N:
+                /*
+                 * PART_nLx2N (Left):
+                 * +----+---+--------+
+                 * |    |            |
+                 * |    |            |
+                 * |    |            |
+                 * +    +   +        +
+                 * |    |            |
+                 * |    |            |
+                 * |    |            |
+                 * +----+---+--------+
+                 *
+                 */
+
+                //左
+                hls_prediction_unit(s, x0,               y0, cb_size     / 4, cb_size, log2_cb_size, 0, idx - 2);
+                //右
+                hls_prediction_unit(s, x0 + cb_size / 4, y0, cb_size * 3 / 4, cb_size, log2_cb_size, 1, idx - 2);
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+                break;
+            case PART_nRx2N:
+
+                /*
+    			 * PART_nRx2N (Right):
+    			 * +--------+---+----+
+    			 * |            |    |
+    			 * |            |    |
+    			 * |            |    |
+    			 * +        +   +    +
+    			 * |            |    |
+    			 * |            |    |
+    			 * |            |    |
+    			 * +--------+---+----+
+    			 *
+                 */
+
+                //左
+                hls_prediction_unit(s, x0,                   y0, cb_size * 3 / 4, cb_size, log2_cb_size, 0, idx - 2);
+                //右
+                hls_prediction_unit(s, x0 + cb_size * 3 / 4, y0, cb_size     / 4, cb_size, log2_cb_size, 1, idx - 2);
+
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+
+                break;
+            case PART_NxN:
+
+                /*
+    			 * PART_NxN:
+    			 * +--------+--------+
+    			 * |        |        |
+    			 * |        |        |
+    			 * |        |        |
+    			 * +--------+--------+
+    			 * |        |        |
+    			 * |        |        |
+    			 * |        |        |
+    			 * +--------+--------+
+    			 *
+                 */
+                //MvDecoder set split bit of the tree
+
+                hls_prediction_unit(s, x0,               y0,               cb_size / 2, cb_size / 2, log2_cb_size, 0, idx - 1);
+                hls_prediction_unit(s, x0 + cb_size / 2, y0,               cb_size / 2, cb_size / 2, log2_cb_size, 1, idx - 1);
+                hls_prediction_unit(s, x0,               y0 + cb_size / 2, cb_size / 2, cb_size / 2, log2_cb_size, 2, idx - 1);
+                hls_prediction_unit(s, x0 + cb_size / 2, y0 + cb_size / 2, cb_size / 2, cb_size / 2, log2_cb_size, 3, idx - 1);
+                //MvDecoder_ctu_quadtree[MvDecoder_quadtree_bit_idx / 8] |= (1 << (MvDecoder_quadtree_bit_idx % 8));
+
+                break;
+            }
+            //bytestream_pu = lc->cc.bytestream-bytestream_before_pu;
+        }
+
+        if (!lc->cu.pcm_flag) {
+            if (lc->cu.pred_mode != MODE_INTRA &&
+                !(lc->cu.part_mode == PART_2Nx2N && lc->pu.merge_flag)) {
+                lc->cu.rqt_root_cbf = ff_hevc_no_residual_syntax_flag_decode(s);
+            }
+            if (lc->cu.rqt_root_cbf) {
+                const static int cbf[2] = { 0 };
+                lc->cu.max_trafo_depth = lc->cu.pred_mode == MODE_INTRA ?
+                                         s->sps->max_transform_hierarchy_depth_intra + lc->cu.intra_split_flag :
+                                         s->sps->max_transform_hierarchy_depth_inter;
+                //处理TU四叉树
+                //uint8_t* bytestream_before_tu = lc->cc.bytestream;
+                ret = hls_transform_tree(s, x0, y0, x0, y0, x0, y0,
+                                         log2_cb_size,
+                                         log2_cb_size, 0, 0, cbf, cbf);
+                //bytestream_tu = lc->cc.bytestream-bytestream_before_tu;
+                if (ret < 0)
+                    return ret;
+            } else {
+                if (!s->sh.disable_deblocking_filter_flag)
+                    ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_cb_size);
+            }
+        }
+    }
+
+    if (s->pps->cu_qp_delta_enabled_flag && lc->tu.is_cu_qp_delta_coded == 0)
+        ff_hevc_set_qPy(s, x0, y0, log2_cb_size);
+
+    x = y_cb * min_cb_width + x_cb;
+    for (y = 0; y < length; y++) {
+        memset(&s->qp_y_tab[x], lc->qp_y, length);
+        x += min_cb_width;
+    }
+
+    if(((x0 + (1<<log2_cb_size)) & qp_block_mask) == 0 &&
+       ((y0 + (1<<log2_cb_size)) & qp_block_mask) == 0) {
+        lc->qPy_pred = lc->qp_y;
+    }
+
+    set_ct_depth(s, x0, y0, log2_cb_size, lc->ct.depth);
+
+    // MvDevoder: bytestream checkpoint of the start of cu
+    // Get size information from CABAC context
+    int bytes_size_cu = lc->cc.bytestream - bytestream_last;
+    //int bytes_pu_tu = bytestream_pu + bytestream_tu;
+    // MvDeocder: fill totalByteSize of this CU.
+    MvDecoder_write_size_buffer(s, x0, y0, log2_cb_size, bytes_size_cu);
+
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
+STEP3: print buffer to result
+
+
+gpac/modules/openhevc_dec/openHevcWrapper.h:72
+typedef struct OpenHevc_Frame_cpy
+{
+   void*        pvY;
+   void*        pvU;
+   void*        pvV;
+   //MvDecoder
+   void*        pvMVX_L0;
+   void*        pvMVY_L0;
+   void*        pvMVX_L1;
+   void*        pvMVY_L1;
+   void*        pvREF_OFF_L0;
+   void*        pvREF_OFF_L1;
+   void*        pvSize;
+   void*        pvMeta;
+
+
+   OpenHevc_FrameInfo frameInfo;
+} OpenHevc_Frame_cpy;
+
+main_hm/main.c:195
+    //MvDecoder
+    openHevcFrameCpy.pvMVX_L0 = NULL;
+    openHevcFrameCpy.pvMVY_L0 = NULL;
+    openHevcFrameCpy.pvMVX_L1 = NULL;
+    openHevcFrameCpy.pvMVY_L1 = NULL;
+    openHevcFrameCpy.pvREF_OFF_L0 = NULL;
+    openHevcFrameCpy.pvREF_OFF_L1 = NULL;
+    openHevcFrameCpy.pvMeta = NULL;
+    openHevcFrameCpy.pvSize = NULL;
+
+main_hm/main.c:259
+    //MvDecoder
+    free(openHevcFrameCpy.pvMVX_L0);
+    free(openHevcFrameCpy.pvMVY_L0);
+    free(openHevcFrameCpy.pvMVX_L1);
+    free(openHevcFrameCpy.pvMVY_L1);
+    free(openHevcFrameCpy.pvREF_OFF_L0);
+    free(openHevcFrameCpy.pvREF_OFF_L1);
+    free(openHevcFrameCpy.pvMeta);
+    free(openHevcFrameCpy.pvSize);
+
+main_hm/main.c:272
+    //MvDecoder
+    openHevcFrameCpy.pvMVX_L0 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, sizeof(unsigned char));
+    openHevcFrameCpy.pvMVY_L0 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, sizeof(unsigned char));
+    openHevcFrameCpy.pvMVX_L1 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, sizeof(unsigned char));
+    openHevcFrameCpy.pvMVY_L1 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, sizeof(unsigned char));
+    openHevcFrameCpy.pvREF_OFF_L0 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, sizeof(unsigned char));
+    openHevcFrameCpy.pvREF_OFF_L1 = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, sizeof(unsigned char));
+    openHevcFrameCpy.pvSize = calloc (openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, sizeof(unsigned char));
+    openHevcFrameCpy.pvMeta = calloc (8192, sizeof(unsigned char));
+
+main_hm/main.c:284
+   if (fout) {
+       int format = openHevcFrameCpy.frameInfo.chromat_format == YUV420 ? 1 : 0;
+       libOpenHevcGetOutputCpy(openHevcHandle, 1, &openHevcFrameCpy);
+       fwrite( openHevcFrameCpy.pvMeta , sizeof(uint8_t) , 8192, fout);
+
+       fwrite( openHevcFrameCpy.pvY , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, fout);
+       fwrite( openHevcFrameCpy.pvU , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nUPitch * openHevcFrameCpy.frameInfo.nHeight >> format, fout);
+       fwrite( openHevcFrameCpy.pvV , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nVPitch * openHevcFrameCpy.frameInfo.nHeight >> format, fout);
+       //MvDecoder
+       fwrite( openHevcFrameCpy.pvMVX_L0 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, fout);
+       fwrite( openHevcFrameCpy.pvMVY_L0 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, fout);
+       fwrite( openHevcFrameCpy.pvMVX_L1 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, fout);
+       fwrite( openHevcFrameCpy.pvMVY_L1 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight * 2, fout);
+       fwrite( openHevcFrameCpy.pvREF_OFF_L0 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, fout);
+       fwrite( openHevcFrameCpy.pvREF_OFF_L1 , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, fout);
+       fwrite( openHevcFrameCpy.pvSize , sizeof(uint8_t) , openHevcFrameCpy.frameInfo.nYPitch * openHevcFrameCpy.frameInfo.nHeight, fout);
+
+   }
+
+
+
+
+
+gpac/modules/openhevc_dec/openHevcWrapper.c:366
+        //MvDecoder
+        unsigned char *MVX_L0 = (unsigned char *) openHevcFrame->pvMVX_L0;
+        unsigned char *MVY_L0 = (unsigned char *) openHevcFrame->pvMVY_L0;
+        unsigned char *MVX_L1 = (unsigned char *) openHevcFrame->pvMVX_L1;
+        unsigned char *MVY_L1 = (unsigned char *) openHevcFrame->pvMVY_L1;
+        unsigned char *REF_OFF_L0 = (unsigned char *) openHevcFrame->pvREF_OFF_L0;
+        unsigned char *REF_OFF_L1 = (unsigned char *) openHevcFrame->pvREF_OFF_L1;
+        unsigned char *Meta = (unsigned char *) openHevcFrame->pvMeta;
+        unsigned char *Size = (unsigned char *) openHevcFrame->pvSize;
+
+
+
+gpac/modules/openhevc_dec/openHevcWrapper.c:406
+        //MvDecoder
+        memcpy(Meta, openHevcContext->picture->data[10], 8192);
+        memset(openHevcContext->picture->data[10],0,8192); // clean the buffer
+
+
+
+
+
+
+
+
+
+
+residual: hevc: 1388 1394

@@ -54,6 +54,21 @@ cd TVRN
 bash pip_opt.sh
 ```
 
+**Prepare HEVC feature decoder:** (Here are two options.)
+
+- Compile from source code (openHEVC_feature_decoder).
+```bash
+cd ./HEVC_decoder
+# If yasm package is not installed, use the following command. 
+sudo apt-get install -y yasm
+mkdir build
+cd build
+cmake -DCMAKE_BUILD_TYPE=RELEASE ..
+make -j9
+make DESTDIR={install_path} install
+```
+- Use pre-compiled binary files for ubuntu 18.04 at `utils/hevc.bin`. 
+
 ## :open_book: Retrained CSTVR Models
 To validate the effectiveness of our approach, we retrained CSTVR using the proposed surrogate network, following the original training setup.
 
