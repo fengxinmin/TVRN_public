@@ -53,8 +53,9 @@ After pulling the image, enable full `ffmpeg` and `skvideo` support by running:
 cd TVRN
 bash pip_opt.sh
 ```
-
-**Prepare HEVC feature decoder:** (Here are two options.)
+**Prepare HEVC feature decoder:**
+The decoder is capable of parsing motion vector fields and compression residuals from the bitstream, which are used by the surrogate network to simulate encoder distortion.
+We provide two options for preparing the modified HEVC decoder:
 
 - Compile from source code (openHEVC_feature_decoder).
 ```bash
