@@ -1,0 +1,10 @@
+accelerate==0.23.0
+diffusers==0.24.0
+DISTS-pytorch==0.1
+einops==0.6.1
+lpips==0.1.4
+numpy==1.26.4
+opencv-contrib-python==4.10.0.82
+opencv-python==4.10.0.82
+tensorboard==2.14.1
+torch-ema==0.3
