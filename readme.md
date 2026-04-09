@@ -35,8 +35,8 @@
 - [x] ~~Repo release~~
 - [x] ~~Pretrained models of CSTVR with the proposed surrogate network~~
 - [ ] Update paper link
-- [ ] Pretrained models
-- [ ] Code release
+- [x] ~~Pretrained models~~
+- [ ] Code release (to be continue)
 
 
 ## :whale: Environment Setup
@@ -53,6 +53,12 @@ After pulling the image, enable full `ffmpeg` and `skvideo` support by running:
 cd TVRN
 bash pip_opt.sh
 ```
+### Note on VVC Support:
+If you intend to use VVC, you must additionally run the following command to configure the skvideo library to locate the correct FFmpeg binary:
+```bash
+sed -i '23s|_FFMPEG_PATH = "/root/miniconda/envs/uprnet/bin"|_FFMPEG_PATH = "/opt/ffmpeg/bin"|' /root/miniconda/envs/uprnet/lib/python3.7/site-packages/skvideo/__init__.py
+```
+
 **Prepare the modified HEVC decoder:**
 The decoder is capable of parsing motion vector fields and compression residuals from the bitstream, which are used by the surrogate network to simulate encoder distortion.
 We provide two options for preparing the modified HEVC decoder:
@@ -70,8 +76,36 @@ make DESTDIR={install_path} install
 ```
 - Use pre-compiled binary files for ubuntu 18.04 at `utils/hevc.bin`. 
 
-## :open_book: Retrained CSTVR Models
+## :open_book: Pretrained Model Weight
+### a. Retrained CSTVR Models
 To validate the effectiveness of our approach, we retrained CSTVR using the proposed surrogate network, following the original training setup.
 
-You can download the retrained models from our release page:
-👉 [CSTVR Retrained Models](https://github.com/fengxinmin/TVRN_public/releases/tag/CSTVR)
+You can download the retrained models from our release page: [CSTVR Retrained Models](https://github.com/fengxinmin/TVRN_public/releases/tag/CSTVR)
+
+### b. Pretrained TVRN Models
+We provide the pretrained TVRN models on our release page:  [TVRN Pretrained Models](https://github.com/fengxinmin/TVRN_public/releases/tag/TVRN-full)
+
+
+
+## Quick Start
+We have integrated code from EBME, EMA, GIMM, RIFE, CVRS, and other works in this repository to facilitate benchmark testing. You only need to run:
+```bash 
+bash test_vimeo.sh
+bash test_ucf.sh
+bash test_snu.sh
+```
+You can adjust the number of frames and other parameters via the bash scripts according to your hardware capabilities. The format is as follows:
+```bash
+bash run_benchmark.sh [DATASET_NAME] [CODEC_NAME] [METHOD_NAME]  [QPS_LIST] [GPU_NUM] [OPTIONAl:65frames]
+# DATASET_NAME: SNU, UCF101, vimeo90k
+# CODEC_NAME: hevc, av1, vvc, vp9, avc
+# METHOD_NAME: TVRN, EMA, GIMM, STAA, IFRNet, RIFE, codec_reference
+# QPS_LIST: 17,22,27,...
+```
+For example, to test TVRN on 65-frame SNU_FILM sequences using VVC across 8 GPUs:
+```bash 
+bash run_benchmark.sh SNU vvc TVRN  19,23,28,33  8  65frames
+```
+
+
+
